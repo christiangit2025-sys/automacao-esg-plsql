@@ -1,0 +1,137 @@
+-- =======================================================
+-- Atividade Avaliativa: Automação PL/SQL e ESG
+-- Aluno: Christian Santos Silva
+-- Curso: Análise e Desenvolvimento de Sistemas (FIAP)
+-- =======================================================
+
+-- 1. CRIAÇÃO DAS TABELAS (DDL)
+CREATE TABLE SETOR (
+    ID_SETOR NUMBER PRIMARY KEY,
+    NOME_SETOR VARCHAR2(100) NOT NULL,
+    LIMITE_KWH_MENSAL NUMBER(10,2) NOT NULL
+);
+
+CREATE TABLE EQUIPAMENTO_IOT (
+    ID_EQUIPAMENTO NUMBER PRIMARY KEY,
+    ID_SETOR NUMBER NOT NULL,
+    NOME_EQUIPAMENTO VARCHAR2(100) NOT NULL,
+    TIPO VARCHAR2(50),
+    STATUS_ENERGIA VARCHAR2(20),
+    CONSTRAINT FK_EQUIP_SETOR FOREIGN KEY (ID_SETOR) REFERENCES SETOR(ID_SETOR)
+);
+
+CREATE TABLE LEITURA_CONSUMO (
+    ID_LEITURA NUMBER PRIMARY KEY,
+    ID_EQUIPAMENTO NUMBER NOT NULL,
+    DATA_HORA_LEITURA DATE NOT NULL,
+    KWH_REGISTRADO NUMBER(10,2) NOT NULL,
+    CONSTRAINT FK_LEITURA_EQUIP FOREIGN KEY (ID_EQUIPAMENTO) REFERENCES EQUIPAMENTO_IOT(ID_EQUIPAMENTO)
+);
+
+CREATE TABLE ALERTA_DESPERDICIO (
+    ID_ALERTA NUMBER PRIMARY KEY,
+    ID_EQUIPAMENTO NUMBER,
+    DATA_ALERTA DATE NOT NULL,
+    MENSAGEM VARCHAR2(255) NOT NULL,
+    NIVEL_CRITICIDADE VARCHAR2(20),
+    CONSTRAINT FK_ALERTA_EQUIP FOREIGN KEY (ID_EQUIPAMENTO) REFERENCES EQUIPAMENTO_IOT(ID_EQUIPAMENTO)
+);
+
+-- Sequence para gerar os IDs dos alertas automaticamente nas Triggers
+CREATE SEQUENCE SEQ_ALERTA START WITH 6 INCREMENT BY 1;
+
+-- =======================================================
+-- 2. INSERÇÃO DE DADOS (DML) - 5 registros por tabela
+-- =======================================================
+
+-- Inserindo Setores
+INSERT INTO SETOR VALUES (1, 'Produção', 5000.00);
+INSERT INTO SETOR VALUES (2, 'TI e Servidores', 3500.00);
+INSERT INTO SETOR VALUES (3, 'Administrativo', 1200.00);
+INSERT INTO SETOR VALUES (4, 'Logística', 2000.00);
+INSERT INTO SETOR VALUES (5, 'Refeitório', 800.00);
+
+-- Inserindo Equipamentos IoT
+INSERT INTO EQUIPAMENTO_IOT VALUES (1, 1, 'Esteira Principal', 'Motor', 'LIGADO');
+INSERT INTO EQUIPAMENTO_IOT VALUES (2, 2, 'Rack Servidor A', 'Servidor', 'LIGADO');
+INSERT INTO EQUIPAMENTO_IOT VALUES (3, 3, 'Ar Condicionado Central', 'Climatização', 'OCIOSO');
+INSERT INTO EQUIPAMENTO_IOT VALUES (4, 4, 'Empilhadeira Elétrica', 'Veículo', 'CARREGANDO');
+INSERT INTO EQUIPAMENTO_IOT VALUES (5, 5, 'Freezer Industrial', 'Refrigeração', 'LIGADO');
+
+-- Inserindo Leituras de Consumo
+INSERT INTO LEITURA_CONSUMO VALUES (1, 1, SYSDATE, 15.5);
+INSERT INTO LEITURA_CONSUMO VALUES (2, 2, SYSDATE, 12.0);
+INSERT INTO LEITURA_CONSUMO VALUES (3, 3, SYSDATE, 5.2);
+INSERT INTO LEITURA_CONSUMO VALUES (4, 4, SYSDATE, 8.0);
+INSERT INTO LEITURA_CONSUMO VALUES (5, 5, SYSDATE, 3.5);
+
+-- Inserindo Alertas Anteriores
+INSERT INTO ALERTA_DESPERDICIO VALUES (1, 3, SYSDATE - 1, 'Ar Condicionado ligado fora do expediente', 'ALTO');
+INSERT INTO ALERTA_DESPERDICIO VALUES (2, 1, SYSDATE - 1, 'Pico de energia detectado no motor', 'CRITICO');
+INSERT INTO ALERTA_DESPERDICIO VALUES (3, 4, SYSDATE - 2, 'Bateria superaquecendo durante carga', 'MEDIO');
+INSERT INTO ALERTA_DESPERDICIO VALUES (4, 2, SYSDATE - 3, 'Consumo acima da média no Rack A', 'ALTO');
+INSERT INTO ALERTA_DESPERDICIO VALUES (5, 5, SYSDATE - 5, 'Porta do freezer aberta por 30 min', 'MEDIO');
+
+COMMIT;
+
+-- =======================================================
+-- 3. AUTOMAÇÕES (PL/SQL TRIGGERS)
+-- =======================================================
+
+-- Atividade 1: Monitorização de Consumo Anormal (Picos de Energia)
+CREATE OR REPLACE TRIGGER TRG_ALERTA_PICO_CONSUMO
+AFTER INSERT ON LEITURA_CONSUMO
+FOR EACH ROW
+BEGIN
+    -- Se o consumo for maior que 50 kWh numa única leitura, gera alerta crítico
+    IF :NEW.KWH_REGISTRADO > 50 THEN
+        INSERT INTO ALERTA_DESPERDICIO (ID_ALERTA, ID_EQUIPAMENTO, DATA_ALERTA, MENSAGEM, NIVEL_CRITICIDADE)
+        VALUES (SEQ_ALERTA.NEXTVAL, :NEW.ID_EQUIPAMENTO, SYSDATE, 'Pico de consumo detectado: ' || :NEW.KWH_REGISTRADO || ' kWh', 'CRITICO');
+    END IF;
+END;
+/
+
+-- Atividade 2: Alerta de Ultrapassagem da Meta de Sustentabilidade do Setor
+CREATE OR REPLACE TRIGGER TRG_ALERTA_META_SETOR
+BEFORE INSERT ON LEITURA_CONSUMO
+FOR EACH ROW
+DECLARE
+    V_LIMITE SETOR.LIMITE_KWH_MENSAL%TYPE;
+BEGIN
+    -- Busca o limite do setor associado ao equipamento que gerou a leitura
+    SELECT S.LIMITE_KWH_MENSAL INTO V_LIMITE
+    FROM SETOR S
+    JOIN EQUIPAMENTO_IOT E ON S.ID_SETOR = E.ID_SETOR
+    WHERE E.ID_EQUIPAMENTO = :NEW.ID_EQUIPAMENTO;
+
+    -- Se uma única leitura representar mais de 20% do limite mensal do setor, gera aviso
+    IF :NEW.KWH_REGISTRADO > (V_LIMITE * 0.20) THEN
+        INSERT INTO ALERTA_DESPERDICIO (ID_ALERTA, ID_EQUIPAMENTO, DATA_ALERTA, MENSAGEM, NIVEL_CRITICIDADE)
+        VALUES (SEQ_ALERTA.NEXTVAL, :NEW.ID_EQUIPAMENTO, SYSDATE, 'Leitura altíssima, risco à meta do setor', 'ALTO');
+    END IF;
+END;
+/
+
+-- Atividade 3: Registo Automático de Falha ou Ociosidade de Equipamentos IoT
+CREATE OR REPLACE TRIGGER TRG_STATUS_FALHA
+AFTER UPDATE OF STATUS_ENERGIA ON EQUIPAMENTO_IOT
+FOR EACH ROW
+WHEN (NEW.STATUS_ENERGIA IN ('DEFEITO', 'FALHA'))
+BEGIN
+    INSERT INTO ALERTA_DESPERDICIO (ID_ALERTA, ID_EQUIPAMENTO, DATA_ALERTA, MENSAGEM, NIVEL_CRITICIDADE)
+    VALUES (SEQ_ALERTA.NEXTVAL, :NEW.ID_EQUIPAMENTO, SYSDATE, 'Equipamento reportou falha/defeito', 'CRITICO');
+END;
+/
+
+-- Atividade 4: Governança Ambiental (Auditoria de Metas de Energia)
+CREATE OR REPLACE TRIGGER TRG_AUDITORIA_META
+BEFORE UPDATE OF LIMITE_KWH_MENSAL ON SETOR
+FOR EACH ROW
+BEGIN
+    -- Verifica se houve aumento maior que 20% no limite mensal permitido
+    IF :NEW.LIMITE_KWH_MENSAL > (:OLD.LIMITE_KWH_MENSAL * 1.20) THEN
+        INSERT INTO ALERTA_DESPERDICIO (ID_ALERTA, ID_EQUIPAMENTO, DATA_ALERTA, MENSAGEM, NIVEL_CRITICIDADE)
+        VALUES (SEQ_ALERTA.NEXTVAL, NULL, SYSDATE, 'Auditoria ESG: Limite do setor ' || :NEW.NOME_SETOR || ' subiu mais de 20%', 'ALTO');
+    END IF;
+END;
+/
